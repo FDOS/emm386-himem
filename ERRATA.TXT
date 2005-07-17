@@ -1,0 +1,28 @@
+*Vmware uses EC00-EFFF area, may not be included as UMBspace
+ (same is valid for MS emm386). This is hardcoded!!! 
+ (I=EC00-EFFF won't have effect in VMware)
+ Area E800-EBFF has to be included manually
+
+*VMware uses CA00-CAFF area for SCSI controller. 
+ If SCSI (LSI Logic 53C1030 or NCR875) selected,
+ you're out of luck. Thus, don't include C800-CBFF.
+
+*Note the license. It's NOT the GPL, but the Artistic License.
+ 
+-------------------
+
+added options are:
+/X           disables E820 memory detection.
+/MAX:xxxx    (xxxx in KiloBytes, probably upper value of 4096000 as that is all
+             that 32bit software can handle)
+/NOABOVE16   modified, disables E801 function calls. 
+             May be used together with /X if wanted.
+/METHOD:     select only 1 out of: ALWAYSON, BIOS, FAST, PS2, KBC, PORT92
+
+for more details, please read
+http://www.freedos.org/freedos/news/news.cgi?q=f&a=html/1695.html
+
+also, HIMEMSM has been removed. It has no support for XMS over 64MB.
+Use /X /NOABOVE16 to get the same behaviour.
+
+Bernd Blaauw

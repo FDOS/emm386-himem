@@ -1,0 +1,207 @@
+        readme.txt for EMM386/HIMEM
+
+    ***********************************************************
+    *THIS IS FREE SOFTWARE WITH ABSOLUTELY NO WARRANTY        *
+    *WHATSOEVER, WHICH YOU MAY USE COMPLETELY AT YOUR OWN RISK*
+    *                                                         *
+    *IF IT WORKS FOR YOU - FINE.                              *
+    *                                                         *
+    *IF IT DOESN'T - STOP USING, BUT DON'T COMPLAIN.          *
+    *                                                         *
+    *IF YOU SEND BUG REPORTS, SEND DETAILS                    *
+    *I WONT'T EVEN LOOK AT BUG REPORTS LIKE                   *
+    *  'your EMM386 makes problems. can you help?'            *
+    *                                                         *
+    * FIXES WELCOME                                           *
+    ***********************************************************
+
+    EMM386/HIMEM was released under the GNU GENERAL PUBLIC LICENSE,
+    and now (March/April 2004 and later) under the Artistic License 
+    see the file DOCS\LICENSE.TXT for the full text. 
+    
+    In addition, the original authors copyrights must remain intact;
+
+
+ ********************************************************************
+ ****** this release requires FreeDOS kernel version >= ke2026 ******
+ ********************************************************************
+
+
+What it shall do:
+
+    HIMEM.EXE  replaces MSDOS HIMEM.SYS,
+    EMM386.EXE replaces MSDOS EMM386.EXE
+
+
+ ****************  Why use EMM386   ****************
+
+if you need Upper memory and your PC is not recognized by 
+    UMBPCI
+
+if you want enhanced (EMS) memory
+
+ **************** Why NOT use EMM386 ***************
+ 
+Programs doing a LOT of IN/OUT may run slower in a protected
+mode environment like EMM386
+
+
+ ******  How to use it *******************************
+ 
+
+
+change CONFIG.SYS like
+
+    files=20
+    buffers=30
+    lastdrive=z
+    break=off
+    
+>>> dos=high,umb
+>>> device=HIMEM.EXE        
+>>> device=EMM386.exe NOEMS 
+>>> shellHIGH=c:\command.com c:\ /p /e:512
+
+both HIMEM and EMM386 require PC's >= 80386 to run.
+
+            
+*******************************************************
+
+
+
+COMMANDLINE switches implemented
+
+    use EMM386.EXE from commandline - it will tell you:
+    
+         NOEMS      - disable EMS completely (default=enable)
+         VDS        - enable  VDS, current status is experimental
+         FRAME=D000 - select wanted pageframe(default=highest possible)
+         EMM=20000  - 20000 KB EMS memory wanted(default=8MB)
+         X=D000-D800 - no make memory mapped devices work
+
+         I=A000-AFFF - IF YOU REALLY KNOW WHAT YOU DO (VGA graphics)
+         I=B000-B7FF - IF YOU REALLY KNOW WHAT YOU DO (Hercules)
+         I=BC00-BFFF - IF YOU REALLY KNOW WHAT YOU DO (VGA upper text)
+                            see WARNING below
+
+         /VERBOSE    - give some more details about found devices, 
+                       mapped UMB's,...l
+
+
+    EMM386 allocates fixed amount of what's needed (from HIMEM.EXE)
+        needed internally ca. 96 KB for pagetables, high code,...
+        64K for DMA handling ( no idea if that works though)
+        additionally enough memory to map UMB's (16..160KB)
+    
+        + tries to allocate the wanted EMS memory (default=8MB) 
+        more to be used as EMS memory
+
+    WARNING:
+        in theory, its possible to use upper memory at 
+        A000..AFFF (VGA graphics) and
+        B000..B7FF (hercules adapter)
+        
+        
+        however some programs (or the BIOS INT 10 functions)
+        seem to write _sometimes_ into this area,
+        so operating with this memory area 
+        
+            IS HIGHLY DISRECOMMENDED to use A000-B7FF
+            
+        use it at your own risk only            
+
+
+*********************   known BUGS ***************
+EMM386 seems to run stable.
+VDS support is only experimental
+
+
+*********************   troubleshooting ***************
+
+
+if you have problems 
+add /VERBOSE to EMM386 commandline, will give some details
+about XMS memory, UMB memory, blocks mapped,...
+
+make sure you have kernel >=2026
+
+1'st) start with following CONFIG.SYS
+	!files=20
+	!break=off
+	!buffers=30
+	!screen=0x12
+	!lastdrive=z
+	!stacks=0,0
+	!dos=high,umb
+	!shellhigh=a:\command.com /P /E:512 /MSG
+	
+	
+	DEVICE=\freedos\himem.exe
+	DEVICE=\freedos\emm386.exe NOEMS X=TEST /VERBOSE
+
+	rem - if you want CD:
+	rem DEVICE=\freedos\CDROM.SYS /D:MSCD000
+
+2'nd) add one driver after the other, until you find
+    the one, that causes trouble.
+    try to load it high (deviceHIGH=),
+    then to load low (device=),
+    then try to load BEFORE EMM386.
+    please report any *positive* results, so I can
+    add them here.
+    
+
+
+3'rd) you are out of luck. sorry.       
+    
+*********************   tweaking EMM386 parameters ***************
+
+EMM386 X=TEST NOEMS        is safest to use
+EMM386 NOEMS               scans more potential UMB areas
+EMM386                     default, provides a few MB's of EMS
+EMM386 X=TEST              safest mode, may not be enough RAM to provide EMS
+EMM386 I=TEST              scans&adds every potential UMB. Most UMBs, very unstable
+
+
+*********************   known incompatibilities ***************
+
+FDXMS08
+    uses priviledged instructions and is not supported
+
+FDXMS09
+    has a bug and is not supported
+    please use HIMEM.EXE, which is 400 byte smaller as well.
+
+***********************************************************
+
+
+
+tom ehlert (tom.ehlert@ginko.de) 2002-04-03 
+bernd blaauw  (bblaauw@home.nl ) 2004-09-26 (Tweaking part, X=TEST)
+                                 2004-11-25 (EMM386 help, fix docs)
+
+
+
+
+
+
+EMM386 1.13 [Nov 23 2004] (c) tom ehlert 2001-2004 c't/H. Albrecht 1990
+ignored commandline  </?>
+ 
+please load EMM386 as DEVICE=EMM386.EXE in config.sys
+ 
+commandline options available for driver
+ ALTBOOT     - hook keyboard interrupt for reboot processing (default)
+ EMM=8192    - 8192 KB EMS memory wanted-if possible
+ FRAME=E000  - select wanted pageframe for EMS
+ NOALTBOOT   - do not hook keyboard interrupt for reboot processing
+ NOEMS       - disable EMS handling
+ NOVCPI      - disable VCPI handling, requires NOEMS
+ I=A000-AFFF - IF YOU REALLY KNOW WHAT YOU DO (VGA graphics)
+ I=B000-B7FF - IF YOU REALLY KNOW WHAT YOU DO (Hercules)
+ I=TEST      - test ROM locations for UMB inclusion
+ SB          - (PCI-only?) SoundBlaster driver compatibility mode
+ VDS         - enable Virtual DMA Services - experimental feature
+ /VERBOSE    - display additional details during start
+ X=D000-D800 - to make memory mapped devices work
+ X=TEST      - test ROM locations for UMB exclusion

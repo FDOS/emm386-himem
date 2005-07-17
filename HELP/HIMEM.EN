@@ -1,0 +1,25 @@
+FreeDOS HIMEM64 3.10 [Oct 19 2004] (c) 1995, Till Gerken 2001-2004 tom ehlert
+Interface : XMS 3.00 80386 64MB
+Extended memory host for FreeDOS (coordinates the usage of XMS and HMA)
+HIMEM is a device driver that is loaded in CONFIG.SYS.
+Please place DEVICE=HIMEM.EXE before any driver using XMS.
+ 
+HIMEM [/METHOD:xxx] [/HMAMIN=n] [/NUMHANDLES=m] [/TESTMEM:ON|OFF]
+[/VERBOSE] [/NOABOVE16] [/X] [/LOG]
+ 
+  /METHOD:xxx     Specifies the method to be used for A20 handling.
+                  Possible values for xxx:
+                  ALWAYSON    Assume that A20 line is permanently ON
+                  BIOS        Use BIOS to toggle the A20 line
+                  FAST        Use port 92h, bypass INT 15h test
+                  PS2         Use port 92h, bypass PS/2 test
+                  KBC         Use the keyboard controller
+                  PORT92      Use port 92h always
+  /HMAMIN=n       Specifies minimum number of Kbs of HMA that a program
+                  must request to gain access to the HMA (default: 0Kb)
+  /NUMHANDLES=m   Specifies number of XMS handles available (def: 72)
+  /TESTMEM:ON|OFF Performs or skips an extended memory test (def: OFF)
+  /VERBOSE        Gives extra information
+  /NOABOVE16      Do not use INT 15h function E801h to detect >64M
+  /X              Do not use INT 15h function E820h to detect >64M
+  /LOG            Logs the driver activity to a log file
