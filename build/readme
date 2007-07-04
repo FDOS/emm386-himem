@@ -1,0 +1,11 @@
+Warning!
+
+Before building, you should apply patch for sources from EMM-BLD.DIF.
+For this, go into SOURCE\EMM386 directory and run next command:
+
+patch -fZp1<build\emm-bld.dif
+
+or apply patch manually. This patch fixes warning messages and mismatched
+variable name ("UMBOldhandler" in .C and "UMBoldhandler" in .ASM). Also,
+you may remove in SOURCE\EMM386 directory unused files - MAKEFILE, BUILD.BAT
+and LIBM.LIB.

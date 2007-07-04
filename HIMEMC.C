@@ -123,6 +123,10 @@ int TheRealMain(int mode, char far *commandline)
 		{
 			x2max32 = 1;
 		}
+	if (FindCommand(commandline, "/NOX2MAX32", &found) )
+		{
+			x2max32 = 0;
+		}
 
 	if (FindCommand(commandline, "/X", &found) )
 		{
@@ -174,12 +178,13 @@ int TheRealMain(int mode, char far *commandline)
 		if (startup_verbose)
 			printf("Minimum HMA that has to be requested: %uK\n",hma_min);
 
-		if (hma_min > 64)
+		if (hma_min > 63)
 			{
-			printf("HIMEM:HMAMIN must be <= 64, corrected\n");
-			hma_min = 64;
+			printf("HIMEM:HMAMIN must be <= 63, corrected\n");
+			hma_min = 63;
 			}			
 
+		hma_min *= 1024;	/* final value is in bytes */
 		}
 		
 	if (FindCommand(commandline, "/INT15=", &found) )
@@ -233,7 +238,7 @@ int TheRealMain(int mode, char far *commandline)
 							
 
 		printf("Extended memory host for FreeDOS (coordinates the usage of XMS and HMA)\n"
-		       "HIMEM is a device driver that is loaded in CONFIG.SYS.\n"
+		       "HIMEM is a device driver that is loaded in CONFIG.SYS. Requires 80386+ CPU.\n"
 		       "Please place DEVICE=HIMEM.EXE before any driver using XMS.\n\n"
 		       "HIMEM [/MAX=####] [/METHOD:xxx] [/HMAMIN=n] [/NUMHANDLES=m]\n"
 		       " [/TESTMEM:ON|OFF] [/VERBOSE] [/NOABOVE16] [/X] [/LOG]\n\n"
@@ -248,12 +253,13 @@ int TheRealMain(int mode, char far *commandline)
 		       "                  PORT92      Use port 92h always\n"
 		       "  /HMAMIN=n       Specifies minimum number of Kbs of HMA that a program\n"
 		       "                  must request to gain access to the HMA (default: 0Kb)\n"
+			   "  /NOX2MAX32      Do not limit XMS 2.0 free/avail. memory report to 32M-1K\n"
 		       "  /NUMHANDLES=m   Specifies number of XMS handles available (def: 72)\n"
 		       "  /TESTMEM:ON|OFF Performs or skips an extended memory test (def: OFF)\n"
 		       "  /VERBOSE        Gives extra information\n" 
 		       "  /NOABOVE16      Do not use INT 15h function E801h to detect >64M\n"
 		       "  /X              Do not use INT 15h function E820h to detect >64M\n"
-			   "  /X2MAX32        Limit XMS 2.0 free/available memory report to 32M-1K\n"
+			   "  /X2MAX32        Limit XMS 2.0 free/avail. memory report to 32M-1K (default)\n"
 		       "  /LOG            Logs the driver activity to a log file\n"
 		       
 				);				

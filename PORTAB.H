@@ -30,7 +30,7 @@
 
 #ifdef MAIN
 #ifdef VERSION_STRINGS
-static char *portab_hRcsId = "$Id: PORTAB.H,v 1.1 2005-07-17 10:39:30 perditionc Exp $";
+static char *portab_hRcsId = "$Id: PORTAB.H,v 1.2 2007-07-04 23:04:02 perditionc Exp $";
 #endif
 #endif
 

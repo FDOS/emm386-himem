@@ -143,8 +143,8 @@ P386                    ; 386 instructions this time
 ;DRIVER_VER          =   0207h   ; some (EMU86) software wants it that way
 ;INTERFACE_VERSION   equ '2.00'  ; like HIMEM 2.77 - we hope :-)
 ;INTERFACE_VER       =   200h
-DRIVER_VERSION      equ '3.11'
-DRIVER_VER          =   030bh 
+DRIVER_VERSION      equ '3.26'
+DRIVER_VER          =   0326h 
 INTERFACE_VERSION   equ '3.00'
 INTERFACE_VER       =   300h
 
@@ -293,13 +293,13 @@ xms_handle_start dw normal_driver_end
     public _xms_num_handles 
 _xms_num_handles dw  72      ; number of available handles
 
-xms_handle_table	stxms_handle_table	<0fdh, size xms_handle, 72, normal_driver_end>
+xms_handle_table	stxms_handle_table	<0fdh, size xms_handle, 72, 0>
 
 	public _xms_logging_enabled
 _xms_logging_enabled db  0      ; debugging output 
 
 	public _x2max32
-_x2max32		db  0				; maximum XMS 2.0 free/available 32M
+_x2max32		db  1			; maximum XMS 2.0 free/available 32M
 
 ;delay2ptr	DW	(OFFSET delay2)
 
@@ -556,11 +556,11 @@ proc    test_a20
 	mov	es,ax		; es->FFFF seg
 	mov	ax,[es:10h]	; read word at FFFF:10h, the 1M limit
 	not	ax			; ~1M word
-	push	[WORD ds:0]	; save word we're changing (INT 0 offset)
-	mov	[ds:0],ax	; save ~1M word to 0:0 (and FFFF:10h if A20 disabled)
-	mov	ax,[ds:0]	; read back, may be unnecessary (forced memory access?)
+	push	[WORD 0]	; save word we're changing (INT 0 offset)
+	mov	[0],ax		; save ~1M word to 0:0 (and FFFF:10h if A20 disabled)
+	mov	ax,[0]		; read back, may be unnecessary (forced memory access?)
 	cmp	ax,[es:10h]	; compare 0:0 ~1M word to 1M word, only equal if A20 is disabled
-	pop	[WORD ds:0]	; restore INT 0 offset
+	pop	[WORD 0]	; restore INT 0 offset
 
 	pushf
 	pop	ax			; get new flags in ax
@@ -1023,9 +1023,27 @@ endp    xms_check_handle
 ;   BL=0a0h -> all XMS is allocated
 
 proc    xms_ext_query_free_xms
+
+; find highest address, doesn't matter if about block allocation status
+ext_findhigh:
+    xor edi,edi     ; highest ending address of any memory block
+    mov bx,[xms_handle_start]    ; start at the beginning of the table
+    mov cx,[_xms_num_handles]    ; check all handles
+
+ext_highloop:
+    test [bx+xms_handle.used],7	; check if flagged free or in use
+	je	ext_nexthigh	; nope
+    mov esi,[bx+xms_handle.xbase]
+    add esi,[bx+xms_handle.xsize]
+    cmp edi,esi
+    jae ext_nexthigh
+    mov edi,esi     ; higher address, update
+ext_nexthigh:
+    add bx,size xms_handle  ; skip to next handle
+    loop    ext_highloop	; check next handle
+
     xor eax,eax               ; contains largest free block
     xor edx,edx               ; contains total free XMS
-    mov edi,eax     ; highest ending address of any memory block
 
     call    xms_find_free_block     ; search free block
     jc  ext_no_free_xms
@@ -1043,25 +1061,23 @@ ext_check_larger:
     jbe ext_not_larger
     mov eax,esi               ; larger, update
 ext_not_larger:
-    mov esi,[bx+xms_handle.xbase]
-    add esi,[bx+xms_handle.xsize]
-    cmp edi,esi
-    jae ext_not_highest
-    mov edi,esi     ; higher address, update
-ext_not_highest:
     call    xms_find_next_free_block
-
-; even if edx is highest total, still have to check highest address
     jnc ext_check_next
 
+    xor bl,bl
+
+ext88_ret:
     mov ecx,edi     ; highest address to ecx return value
 	shl	ecx,10		; convert to bytes
-    xor bl,bl
+	dec	ecx			; relative zero
+	
     ret         ; success
 
 ext_no_free_xms:
     mov bl,XMS_ALREADY_ALLOCATED
-    ret;return_failure
+;   ret;return_failure
+	jmp	ext88_ret
+
 endp    xms_ext_query_free_xms
 
 
@@ -1521,12 +1537,12 @@ GDTsrcmiddle db 0
             db  0fh         ; More type bits and bits 16-19 of source segment length.
 GDTsrchigh  db  0           ; Bits 24-31 of source address.
 
-            dw 0ffffh           ; source segment length
+            dw 0ffffh           ; dest segment length
 GDTdstlow   dw 0                ; 24 bit src address
 GDTdstmiddle db 0
-            db 093h             ; source access rights == 94
-            db  0fh         ; More type bits and bits 16-19 of source segment length.
-GDTdsthigh  db   0           ; Bits 24-31 of source address.
+            db 093h             ; dest access rights == 94
+            db  0fh         ; More type bits and bits 16-19 of dest segment length.
+GDTdsthigh  db   0           ; Bits 24-31 of dest address.
 
             db 0,0,0,0,0,0,0,0  ; dummy GDT entry
             db 0,0,0,0,0,0,0,0  ; dummy GDT entry
@@ -1567,7 +1583,8 @@ nomax1000:
     push cs
     pop  es
 
-    lea si, [BIOSGDT]
+;    lea si, [BIOSGDT]
+    mov si, OFFSET BIOSGDT
     shr cx,1                ; number of words
 
     clc
@@ -1837,7 +1854,8 @@ endp    xms_get_handle_info
 
 
 ;******************************************************************************
-;  reallocates an XMS block. only supports shrinking.
+;;  reallocates an XMS block. only supports shrinking.
+;  reallocates an XMS block. shrinking and growing supported
 ; In:   AH=0fh
 ;   BX=new size for the XMS block in kbytes
 ;   DX=unlocked XMS handle
@@ -1866,16 +1884,84 @@ ext_realloc_xms_handle_valid:
     push    edx
 
     xchg    ebx,edx
+
+; fail if block is locked
+	cmp	[bx+xms_handle.locks],0
+	jne	ext_xms_locked
+
     cmp edx,[bx+xms_handle.xsize]
     jbe ext_shrink_it
 
+; growing, try to allocate a new block
+	call	xms_ext_alloc_xms
+	cmp	ax,1
+	je	ext_gotblock
+
+; failed to allocate a new block
+	pop	edx				; proper error code already in bl
+	mov	al,bl
+	pop	ebx
+	mov	bl,al			; restore error code
+	jmp	ext_failed
+
+xms_move_data	xms_move_strc	<>
+
+; got new block, copy info from old block to new block
+; dx == new handle
+ext_gotblock:
+	pop	ebx				; bx == old handle
+	push	ebx
+	movzx	edx,dx		; edx == new handle
+
+	mov	eax,[bx+xms_handle.xsize]
+	shl	eax,0ah			; K to byte
+	mov	[xms_move_data.len],eax		; transfer old handle data to new location
+	xor	eax,eax
+	mov	[xms_move_data.src_offset],eax
+	mov	[xms_move_data.dest_offset],eax
+	mov	[xms_move_data.src_handle],bx
+	mov	[xms_move_data.dest_handle],dx
+
+	mov	si,OFFSET xms_move_data
+	push	bx			; save old handle ptr
+	push	ds
+	pop	es				; es -> "original" ds for xms_move_xms
+	call	xms_move_xms
+	push	cs			; xms_move_xms eats critical ds value
+	pop	ds
+	pop	bx
+
+; swap handle data so handle pointers remain valid
+;  handle data is 10 bytes long
+	mov	eax,[bx]
+	xchg	eax,[edx]
+	mov	[bx],eax
+	mov	eax,[bx+4]
+	xchg	eax,[edx+4]
+	mov	[bx+4],eax
+	mov	ax,[bx+8]
+	xchg	ax,[edx+8]
+	mov	[bx+8],ax
+
+; free newly allocated handle with old handle data in it
+; dx == new handle
+	call	xms_free_xms
+	jmp	ext_grow_success
+
 ext_no_xms_handles_left:
     pop edx
-    pop ebx            
-    
+    pop ebx
+    mov bl,XMS_NO_HANDLE_LEFT
+	jmp	ext_failed
+
+ext_xms_locked:
+    pop edx
+    pop ebx
+    mov bl,XMS_BLOCK_LOCKED
+
+ext_failed:
     pop eax
     xor ax,ax
-    mov bl,XMS_NO_HANDLE_LEFT       ; simulate a "no handle" error
     ret ; failure
 
 ext_shrink_it:
@@ -1898,6 +1984,7 @@ ext_shrink_it:
     call xms_free_xms               ; to merge it with free block list
 
 ext_dont_need_handle:
+ext_grow_success:
     pop edx
     pop ebx
     pop eax
@@ -2559,12 +2646,15 @@ endp detect_and_handle_port92
 ;
 disable_enable_a20_BIOS:
 	pushf
+	sub	sp,10	; give buggy BIOS some stack to chew on without causing problems
+				; one word might suffice, but let's be really safe
 	cli
 	shr	ah,1	; ah to 0 or 1
 	mov	al,24h
 	xchg	ah,al	; ax == 2400h to turn off, 2401h to turn on
 	int	15h
 
+	add	sp,10	; restore potentially gnawed-on stack
 	popf
 	pop	ax
     ret
@@ -2838,7 +2928,7 @@ IDEAL
     public _init_message,_vinit_message,_copyright
 
 _init_message  db  'FreeDOS HIMEM64 ',DRIVER_VERSION,0
-_copyright     db  '(c) 1995, Till Gerken 2001-2005 tom ehlert',0
+_copyright     db  '(c) 1995, Till Gerken 2001-2006 tom ehlert',0
 _vinit_message db  'Interface : XMS ',INTERFACE_VERSION,' 80386 4G ',0
 
 
@@ -2928,7 +3018,8 @@ forced_done:
 
 ; check if the A20 line is on, if so assume it's always on
 	call	test_a20
-	jz	check_BIOS_method		; not on, try other methods
+;	jz	check_BIOS_method		; not on, try other methods
+	jz	check_A20_method		; not on, try other methods
 
 ; use A20 always on code (dummy enable/disable A20 routine)
 flag_alwayson:
@@ -2937,9 +3028,10 @@ flag_alwayson:
 	int	21h
 	jmp	got_type
 
-check_BIOS_method:
-    call detect_and_handle_BIOS	; see if BIOS A20 handler supported
-	jnc	got_type
+check_A20_method:
+;check_BIOS_method:
+;    call detect_and_handle_BIOS	; see if BIOS A20 handler supported
+;	jnc	got_type
 
 ; see if fast/port 92h/PS/2 handler supported with 2403h BIOS call
     call detect_and_handle_fast	
@@ -2953,6 +3045,11 @@ check_BIOS_method:
 
 ; KBC used to be called KBC-2 until original KBC method was turned off
     call detect_and_handle_KBC	; see if KBC handler supported
+	jnc	got_type
+
+; try BIOS here, demoted from first in line because unreliable BIOS
+;  versions of A20 control exist
+    call detect_and_handle_BIOS	; see if BIOS A20 handler supported
 	jnc	got_type
 
 ; see if fast port 92h handler supported without BIOS or PS/2 signature

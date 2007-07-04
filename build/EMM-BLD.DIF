@@ -1,0 +1,211 @@
+Only in old: build.bat
+diff -rup old/emm386.asm new/emm386.asm
+--- old/emm386.asm	2006-08-19 16:45:18.000000000 +0000
++++ new/emm386.asm	2006-08-20 23:43:32.000000000 +0000
+@@ -337,7 +337,7 @@ interrupt:
+ ; good enough for FreeDOS=UMB, for nothing else :-)
+ ;*********************************************************
+ 
+-public _UMBhandler, _UMBoldhandler
++public _UMBhandler, _UMBOldhandler
+ 
+ _UMBhandler:
+ 
+@@ -364,8 +364,8 @@ TheUMBHandler:
+ 
+ 
+ not_for_us:
+-	db 0eah					    ; jmp far  UMBoldhandler
+-_UMBoldhandler dd 0
++	db 0eah					    ; jmp far  UMBOldhandler
++_UMBOldhandler dd 0
+ 
+ 
+ 
+@@ -559,7 +559,7 @@ local_disable_a20:
+ dis_share:
+ 	mov	[cs:A20_localcount],ax
+ 	jnz	global_enable_a20
+-;	mov	al,0	; disable A20 flag to EMM
++	;mov	al,0	; disable A20 flag to EMM
+ 
+ disen_share:
+ 	push	cx
+diff -rup old/emm386c.c new/emm386c.c
+--- old/emm386c.c	2006-08-19 17:11:24.000000000 +0000
++++ new/emm386c.c	2006-08-20 23:43:44.000000000 +0000
+@@ -381,7 +381,7 @@ int isUMBMemory(ushort base)
+ 	return value is in 4K pages
+ 	does not count mapping at FF00
+ */
+-UMBpageswanted(void)
++int UMBpageswanted(void)
+ {
+ 	int i,wanted = 0;
+ /*	for (wanted = 0, i = 0xa0; i < 0xf0; i+=4)	*/
+@@ -411,7 +411,7 @@ int xmscall(uint function)
+ /*	asm mov cx,xmscx	*/
+ 	asm mov bx,xmsbx
+ /*	asm mov ax,xmsax	*/
+-	asm mov ah,function
++	asm mov ah,byte ptr [function]
+ 
+ 	XMSdriverAdress();
+ 
+@@ -432,7 +432,7 @@ int xmscall32(uint function)
+ 	asm mov dx,reg32.edx_low
+ 	asm db 0x66
+ 	asm mov bx,reg32.ebx_low
+-	asm mov ah,function
++	asm mov ah,byte ptr [function]
+ 
+ 	XMSdriverAdress();
+ 
+@@ -549,13 +549,18 @@ cant_enable:
+ 
+ */
+ 
+-XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
++int XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
+ {   
+ 	unsigned long xmslargest;
+ 	unsigned long xmstotal;
++#if 0
+ 	unsigned long preallocate;
++#endif
+ 	unsigned long ulcalc;
+-	ushort xmshandle, temphandle;
++	ushort xmshandle;
++#if 0
++	ushort temphandle;
++#endif
+ 	int xmsspec3 = 0;
+ 	int badstatus;
+ /*	unsigned long reserve = 0;	*/
+@@ -884,7 +889,7 @@ foundend:
+ 
+ #if 0
+ 	/* EMM386 no longer disallows 0xa000 upper memory block returns */
+-                                           / * this could cause weird bugs 
++                                           /* this could cause weird bugs 
+                                               if upper memory a000 would ever
+                                               be merged with 9fff:0        */
+ 			if (UMBsegments[index].segment == 0xa000)
+@@ -1149,7 +1154,7 @@ int TheRealMain(int mode, char far *comm
+ 		
+ 			printf("%c=%x..%x\n",memtype, rangestart,rangestop);
+ 			
+-			if (rangestart && rangestop && rangestart<=rangestop && rangestop <= 0xffff)
++			if (rangestart && rangestop && rangestart<=rangestop /*&& rangestop <= 0xffff*/)
+ 				for ( ; rangestart < rangestop; rangestart++)
+ 					SetMemoryType(rangestart,memtype);
+ 				
+@@ -1289,7 +1294,7 @@ int TheRealMain(int mode, char far *comm
+ 		printf("  MONITOR_ADDR  %lx EMM_MEMORY_END %lx TOTAL_MEMORY  %lx\n",
+ 			MONITOR_ADDR,EMM_MEMORY_END, TOTAL_MEMORY);
+ 
+-	/* InstallUMBhandler();		/* as long as we can debug it */
++	/*InstallUMBhandler();*/	/* as long as we can debug it */
+ 			
+ 			
+ 
+@@ -1306,6 +1311,7 @@ int TheRealMain(int mode, char far *comm
+ /* called just before we go resident
+ */ 
+ void MyFunnyMain(void);
++int emmcall(uint function);
+  
+ void far finishing_touches()
+ { 
+diff -rup old/himemc.c new/himemc.c
+--- old/himemc.c	2006-08-19 16:25:02.000000000 +0000
++++ new/himemc.c	2006-08-20 23:43:50.000000000 +0000
+@@ -199,7 +199,7 @@ int TheRealMain(int mode, char far *comm
+ 
+ 	if (FindCommand(commandline, "/TESTMEM:ON", &found) || FindCommand(commandline, "/TEST", &found))
+ 		{
+-		extern XMSTESTmain(char);
++		extern int XMSTESTmain(char);
+ 		
+ 		XMSTESTmain(startup_verbose);
+ 		
+@@ -209,7 +209,7 @@ int TheRealMain(int mode, char far *comm
+ 
+ 	if (FindCommand(commandline, "/KILL64", &found))
+ 		{
+-		extern XMSKILL64(void);
++		extern int XMSKILL64(void);
+ 		
+ 		XMSKILL64();
+ 		
+@@ -273,5 +273,3 @@ int TheRealMain(int mode, char far *comm
+ 	return 0;			/* driver can't fail */
+ 
+ }
+-
+- 
+\ No newline at end of file
+Only in old: libm.lib
+Only in old: makefile
+diff -rup old/prf.c new/prf.c
+--- old/prf.c	2005-05-02 02:38:50.000000000 +0000
++++ new/prf.c	2006-08-09 13:22:02.000000000 +0000
+@@ -52,12 +52,12 @@ static BYTE *prfRcsId = "$Id: prf.c,v 1.
+ static BYTE *charp = 0;
+ 
+ #ifdef PROTO
+-VOID handle_char(COUNT);
++static VOID handle_char(COUNT);
+ VOID put_console(COUNT);
+ BYTE *ltob(LONG, BYTE *, COUNT);
+ COUNT do_printf(CONST BYTE *, REG BYTE **);
+ #else
+-VOID handle_char();
++static VOID handle_char();
+ VOID put_console();
+ BYTE *ltob();
+ COUNT do_printf();
+diff -rup old/useful.c new/useful.c
+--- old/useful.c	2006-08-08 02:10:54.000000000 +0000
++++ new/useful.c	2006-08-09 13:19:14.000000000 +0000
+@@ -241,9 +241,3 @@ int StartupLogging()
+ 	else
+ 		return FALSE;		
+ }
+-
+-	
+-	
+-	
+-	
+-	
+\ No newline at end of file
+diff -rup old/xmstest.c new/xmstest.c
+--- old/xmstest.c	2004-09-24 22:51:58.000000000 +0000
++++ new/xmstest.c	2006-08-09 13:07:48.000000000 +0000
+@@ -158,7 +158,7 @@ void fillMem(long *buff,int hnum, int of
+ long buff1[256];
+ long buff2[256];
+ 
+-XMSmove(unsigned dhandle, long doffset,
++int XMSmove(unsigned dhandle, long doffset,
+         unsigned shandle, long soffset,
+         long length)
+ {
+@@ -289,7 +289,7 @@ end:
+ }
+ #endif /* TEST_XMS_REALLOC */
+ 
+-XMSTESTmain(char verbose)
++int XMSTESTmain(char verbose)
+ {
+     int numhandles;
+     unsigned maxfree;
+@@ -562,7 +562,7 @@ error_reverify:        
+ */	
+ 
+ 
+-XMSKILL64()
++int XMSKILL64()
+ {
+ #ifndef __KILL64
+ 	printf("KILL64 not implemented\n");

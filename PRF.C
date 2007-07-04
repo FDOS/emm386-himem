@@ -45,7 +45,7 @@ COUNT ASMCFUNC fstrlen (BYTE FAR * s);        /* don't want globals.h, sorry */
 
 
 #ifdef VERSION_STRINGS
-static BYTE *prfRcsId = "$Id: PRF.C,v 1.1 2005-07-17 10:39:30 perditionc Exp $";
+static BYTE *prfRcsId = "$Id: PRF.C,v 1.2 2007-07-04 23:04:02 perditionc Exp $";
 #endif
 
 

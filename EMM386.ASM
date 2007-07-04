@@ -124,6 +124,7 @@
 		public _NoPageFrame
 		public _SB
 		public _NoAltBoot
+		public _NoDisableA20
 		public _startup_verbose
 
 		LOCALS
@@ -138,7 +139,8 @@ EXT             EQU 14*1024                  ; here you can enter the
                                              ; optional size in KB
 
 MAX_EMS_PAGES_ALLOWED	EQU	800h	; 32M max mem (16K each page), always even
-MAXMEM16K_DEFAULT	EQU	40000h	; 4G in 16K blocks
+; keep this value low for buggy VCPI clients that fail with large free amounts
+MAXMEM16K_DEFAULT	EQU	1E00h	; 120M in 16K blocks
 
 UNIMPLEMENTED_EMS_DEBUG	EQU	0
 VCPI_DEBUG	EQU	0
@@ -273,6 +275,8 @@ TMP_STACK ENDS
 DRIVERCODE SEGMENT PARA USE16
 		ASSUME  CS:DRIVERCODE,DS:NOTHING,ES:NOTHING,FS:NOTHING,GS:NOTHING
 
+public interrupt,strategy,device_header,_EMM_Driver_Name
+
 ;******************************************************************************
 ; device driver header
 
@@ -295,8 +299,6 @@ _EMM_Driver_Name:
 ; In:   ES:BX - address of request header
 ; Out:  nothing
 
-public interrupt,strategy,device_header,_EMM_Driver_Name
-
 request_ptr dd  0			    ; pointer to request header
 
 strategy:
@@ -313,7 +315,7 @@ interrupt:
 					; this one request is fullfilled, then
 					; every other denied
 	push es
-	push di
+	push edi
 
 	les di,cs:[request_ptr]          ; load address of request header
 
@@ -326,7 +328,7 @@ interrupt:
 					 ; away after init
 					 ; so ALL following request are simply OK'ed
 
-	pop di
+	pop edi
 	pop es
 	retf
 
@@ -335,7 +337,7 @@ interrupt:
 ; good enough for FreeDOS=UMB, for nothing else :-)
 ;*********************************************************
 
-public _UMBhandler, _UMBOldhandler
+public _UMBhandler, _UMBoldhandler
 
 _UMBhandler:
 
@@ -348,6 +350,10 @@ TheUMBHandler:
 	je  global_disable_a20
 	cmp ah,6				    ; local disable A20
 	je  local_disable_a20
+	cmp	ah,3
+	je	global_enable_a20
+	cmp	ah,5
+	je	local_enable_a20
 
 	cmp ah,010h				    ; UMBallocate
 	je  UMBallocate				    ;
@@ -408,7 +414,7 @@ public _UMBsegments
 ;		dd 0,0,0,0
 _UMBsegments		dd	0,0,0,0,0,0,0,0	; segment/size entry each
 VDS_retcode	DB	0
-
+A20_localcount	DW	0
 
 UMBallocate:
 	push	cx
@@ -421,7 +427,7 @@ UMBallocate:
 
 @@UMBloop:
 	cmp	WORD PTR cs:[bx],0	; see if valid UMB
-	je	@@UMBNext			; no
+	je	@@UMBnext			; no
 	test	BYTE PTR cs:[bx+3],80h	; see if UMB already allocated (high bit size set)
 	jne	@@UMBnext			;  yes
 	cmp	dx,cs:[bx+2]		; dx = requested block size (high bit of UMB size known reset)
@@ -524,15 +530,47 @@ UMBfree:
 	xor	ax,ax			; flag failure
 	mov	bl,0b2h			; invalid UMB segment number error code
 	pop	cx
-	retf	2			; consume original bx on stack
+	add	sp,2			; consume original bx on stack
+	retf
 
+; disable and enable are now supported
+; emulate this by remapping memory at HMA to point to appropriate memory location
 ;
-; we do not want to have A20 disabled - we need it !
-; so we don't do anything - and even say SUCCESS - like WinNT DOSBOX
+;; we do not want to have A20 disabled - we need it !
+;; so we don't do anything - and even say SUCCESS - like WinNT DOSBOX
 ;
+
+local_enable_a20:
+	mov	ax,[cs:A20_localcount]
+	inc	ax
+	jz	global_enable_a20	; overflow -> skip counter increment
+	mov	[cs:A20_localcount],ax
+global_enable_a20:
+	mov	al,1	; enable A20 flag to EMM
+	jmp	disen_share
 
 global_disable_a20:
+	xor	ax,ax	; disable A20 flag to EMM (and set ZF)
+	jmp	dis_share
 local_disable_a20:
+	mov	ax,[cs:A20_localcount]
+	sub	ax,1
+	jc	global_disable_a20	; underflow -> skip counter decrement
+dis_share:
+	mov	[cs:A20_localcount],ax
+	jnz	global_enable_a20
+;	mov	al,0	; disable A20 flag to EMM
+
+disen_share:
+	push	cx
+	push	dx
+	mov	cx,4652h	; "FR"
+	mov	dx,4545h	; "EE"
+	mov	ah,3fh		; special EMM function (QEMM does it, so can we)
+	int	67h
+
+	pop	dx
+	pop	cx
 	mov ax,1
 	mov bl,0
 	retf
@@ -542,7 +580,7 @@ if 1
 ;;******************************************************
 ;; absolute braindamaged VDS implementation - october 2002
 ;;******************************************************
-; slightly less braindamaged VDS implementation - november 2004
+; slightly less braindamaged VDS implementation - november 2004-jul 2005
 public _int4b_handler
 public _int4b_oldhandler
 
@@ -550,29 +588,20 @@ _int4b_handler:
 	cmp ah,081h
 	je  vds_handler
 
+_int4b_old:
 	db 0eah
 _int4b_oldhandler:
 	dd 0
-
-vds_error:
-	push si
-	push bx
-	call print
-	db 'unimplemented VDS function '
-which_vds:
-	db	'xx-xx',0dh,0ah,0
-	pop  bx
-	pop si
-
-
-	mov al,0fh			; function not supported
-	stc
-
-vds_out:
-	sti
-	retf 2
+	
+vds_reserved:
+	popf
+	jmp	_int4b_old
 
 vds_handler:
+	pushf				; save entry flags (interrupt/carry of interest)
+	cmp	al,1		; check if reserved/unused VDS function 0 or 1
+	jbe	vds_reserved	; could be stupid SCSI BIOS
+
 	mov	cs:VDS_retcode,0
 	cmp	al,2
 	je	vds_version
@@ -580,17 +609,41 @@ vds_handler:
 	je	vds_lock
 	cmp	al,5
 	je	vds_scatterlock
+	cmp al,7		; request DMA buffer
+	je	vds_reqbuff
+	cmp al,0bh		; disable DMA translation, unsupported, don't give feedback
+	je	vds_unsupnoshow
 
+; functions 4, 6, and 0ch are no-ops
 	cmp	al,6
 	je	vds_nada
 	cmp	al,4
-	jne	vds_bad
+	je	vds_nada
+	cmp	al,0ch		; enable DMA translation (never disabled)
+	je	vds_nada
+	jb	vds_unsup	; valid VDS functions that are unsupported, give feedback
+	jmp	vds_reserved
 
 vds_nada:
-	clc					; do nothing on unlock command
-	jmp	vds_out
+	popf				; restore entry flags
+	clc					; flag no-op success
 
-vds_bad:
+; do iret, but only update CY flag status
+;	retf	2			; iret, eat flags on stack
+iret_with_new_CY:
+	push	bp
+	push	ax
+	pushf
+	pop	ax
+	and	al,1		; CY flag
+	mov	bp,sp
+	and	BYTE PTR [bp+2+2+4],0feh	; bp is ss: relative, strip old CY
+	or	BYTE PTR [bp+2+2+4],al
+	pop	ax
+	pop	bp
+	iret
+
+vds_unsup:
 	push	ax
 	push	bx
 	push	cx
@@ -625,8 +678,24 @@ vds2:
 
 	pop	cx
 	pop	bx
+
+	push si
+	push bx
+	call print
+	db 'unimplemented VDS function '
+which_vds:
+	db	'xx-xx',0dh,0ah,0
+	pop  bx
+	pop si
 	pop	ax
-	jmp vds_error
+
+vds_unsupnoshow:
+	mov al,0fh			; function not supported
+vds_failret:
+	popf				; restore entry flags
+	stc					; flag failure
+;	retf 2				; iret, eat flags on stack
+	jmp	iret_with_new_CY
 
 ;   DDS                   STRUCT
 ;     Region_Size         DWORD     ?    ; offset 0
@@ -656,9 +725,14 @@ vds_version:
 	xor	di,di		; si:di == maximum dma buffer size requestable
 	mov	si,di
 	xor	dx,dx		; flags
+	popf
 	clc
-	sti
-	retf 2
+;	retf 2
+	jmp	iret_with_new_CY
+
+vds_reqbuff:
+	mov	al,4		; no buffer available, ever
+	jmp	vds_failret
 
 vds_lock:
 
@@ -788,6 +862,7 @@ vds_lenfail:
 	mov	WORD PTR es:[di+0ah],0	; zero buffer id
 
 vds_fail:
+;	popf
 	stc				; flag error
 	jmp	vds_done
 
@@ -821,20 +896,25 @@ vds_locksuccess:
 	mov	WORD PTR es:[di+0ah],0	; zero buffer id
 
 vds_flagsuccess:
+;	popf
 	clc
 
 vds_done:
-	pop	edx	
+	pop	edx			; cannot change carry flag status through ret
 	pop	ecx
+	movzx	eax,sp
+	mov	bx,ss:[eax+4]	; original ax value
+	mov	ss:[eax+8],bx	; store over original flag
 	pop	ebx
 	pop	eax
+	pop	ax			; original flag value changes to original ax, clean stack
 	mov	al,cs:VDS_retcode
-	sti
-	retf 2
+;	retf 2
+	jmp	iret_with_new_CY
 
 vds_scatterlock:
 	test	dl,40h	; see if page table entries flagged
-	jne	vds_bad		;  unsupported
+	jne	vds_unsup	; yes, unsupported
 
 	push	eax
 	push	ebx
@@ -843,6 +923,7 @@ vds_scatterlock:
 
 	mov	ebx,es:[di]	; ebx == region size
 	xor	ecx,ecx		; cx holds entries used
+	mov	eax,ecx		; zero eax for later calcs
 	mov	es:[di+0eh],cx	; EDDS number entries used
 	cmp	ebx,ecx
 	je	vds_flagsuccess	; zero sized region always successful
@@ -878,11 +959,12 @@ vds_checklock:
 	dec	ebx			; ebx == final linear address
 	shr	ebx,12		; convert to 4K frame
 	call	GetPhysAddr
-	mov	ebp,edx		; ebp == current physical address
+	mov	ebp,edx		; ebp == current physical address of 4K page
 
 	cmp	cx,es:[di+0ch]	; see if any available entries (nonzero)
 	je	vds_entryloop	; no
-	and	si,0fffh
+	and	esi,0fffh
+	add	ebp,esi		; add back in offset within 4K page
 	mov	edx,1000h
 	sub	dx,si		; compute initial 4K frame region size
 	mov	es:[edi+ecx*8+14h],edx
@@ -1314,8 +1396,9 @@ NEW15 PROC FAR
 	jz @@ok
 	STC
 @@ok:
-	STI
-	RET 2
+;	STI
+;	RET 2
+	jmp updated_iret
 NEW15 ENDP
 ;******************************************************************************
 
@@ -1374,7 +1457,22 @@ NEW13 PROC FAR
 HLT13:  HLT                                 ; Hello, 32-Bit World !
 @@Bye:  BTR     CS:[Flags],INT13Activ       ; Bye bye (Flags are being saved,
         POPF				                ; the BTR CY-flag erased !)
-        RETF    2		                    ; delete flags on stack
+
+; only update carry flag status, keep rest of original flags
+;        RETF    2		                    ; delete flags on stack
+updated_iret:
+	push	bp
+	push	ax
+	pushf
+	pop	ax
+	and	al,1		; CY flag
+	mov	bp,sp
+	and	BYTE PTR [bp+2+2+4],0feh	; bp is ss: relative, strip old CY
+	or	BYTE PTR [bp+2+2+4],al
+	pop	ax
+	pop	bp
+	iret
+
 NEW13 ENDP
 
 NEW40 PROC FAR
@@ -1394,7 +1492,10 @@ NEW40 PROC FAR
 HLT40:  HLT                                     ; Hello, 32-Bit World !
 @@Bye:  BTR     CS:[Flags],INT40Activ           ; Bye bye (Flags are being
         POPF					; saved, the BTR CY-Flag emptied !)
-        RETF    2				; Back with the flags
+
+;        RETF    2				; Back with the flags
+	jmp	updated_iret
+
 NEW40 ENDP
 ;(#-3-#)
 
@@ -1469,9 +1570,10 @@ _NoVCPI			DB	0	; flags no VCPI services
 _FlagNOEMS		DB	0	; flags no EMS services
 _NoPageFrame	DB	0	; flags FRAME=NONE
 _SB				DB	0	; flags SB (soundblaster drivers)
-_NoAltBoot		DB	0	; flags NoAltBoot (don't check INT 9 for Ctrl-Alt-Del)
+_NoAltBoot		DB	1	; flags NoAltBoot (don't check INT 9 for Ctrl-Alt-Del)
 Xchg_Flag		DB	0	; EMS 4.0 func. 57h move/exchange memory region flag
 VCPI_PM_call	DB	0	; flags call to VCPI via protected mode rather than INT 67h
+_NoDisableA20	DB	0	; flag that EMM386 can't disable A20
 
 				    ; Flag to enable/disable special
 				    ; handling of INT67/44 (MAP_PAGE)
@@ -1479,8 +1581,11 @@ VCPI_PM_call	DB	0	; flags call to VCPI via protected mode rather than INT 67h
 	public _INIT_DONE
 _INIT_DONE		db		0			; reset after initialization
 
-public _MEMCHECK		    ; check access against highest physical machine address
+public _MEMCHECK		    ; check and allow access outside of RAM address space 0-4G
 _MEMCHECK	db      0
+
+public _NOCHECK		    ; do not check and allow access outside of RAM address space
+_NOCHECK	db      0
 
 public _ENDALLOC		   	; allocate EMS/VCPI from end of memory blocks
 _ENDALLOC	db      0
@@ -1548,6 +1653,12 @@ LastBlockFreed			DD	0	; pointer to last block freed from
 XMSBlockSize		DD	0	; current size of XMS block to allocate for sharing, in K
 XMSPoolBlockCount	DW	0	; count of XMS handles allocated for pool blocks (not counting initial UMB block)
 
+ZeroPTE	DD	00007h,01007h,02007h,03007h,04007h,05007h,06007h,07007h
+		DD	08007h,09007h,0a007h,0b007h,0c007h,0d007h,0e007h,0f007h
+HMAPTE	DD	100007h,101007h,102007h,103007h
+		DD	104007h,105007h,106007h,107007h
+		DD	108007h,109007h,10a007h,10b007h
+		DD	10c007h,10d007h,10e007h,10f007h
 ;(*-3-*)
 ;
 ; GDT - Global Descriptor Table. This table holds the descriptions
@@ -1600,7 +1711,7 @@ DATA_END        EQU     $			 ; End of resident part
 ; place duly, the condition that DPL = 3 must be valid !
 
 IDT_ENTRY_O MACRO SEQNR				;; Unfortunately this is the only way
-        DW      OFFSET INT&SEQNR		;; the Symbolname INTxx is correctly
+        DW      OFFSET INT_&SEQNR		;; the Symbolname INTxx is correctly
 		ENDM				;; produced.
 
 IDT_ENTRY MACRO FROM,TO				;; Interrupt Gates producer
@@ -1616,7 +1727,7 @@ ENTRY   =       ENTRY+1
 		ENDM
 
 IDT     LABEL BYTE
-                IDT_ENTRY 00H,0FFH               ; Interrupt-Table
+                IDT_ENTRY 0,0FFH               ; Interrupt-Table
 IDT_LEN EQU     $-IDT
 		PURGE   IDT_ENTRY,IDT_ENTRY_O
 ;
@@ -1765,7 +1876,7 @@ _pause macro line,col,c1,c2
 	push ebx
 
 	mov ebx, (line*80 + col) * 2
-	call pause
+	call pauser
 
 	pop ebx
 	endm
@@ -1904,8 +2015,8 @@ $
 	REP     STOS DWORD PTR [EDI]
         BIG_NOP				    ; For the old 386 (B3-Mask)
 
-	cmp	FS:[_MEMCHECK],0
-	je	@@nomemcheck
+	cmp	FS:[_NOCHECK],0
+	jne	@@nomemcheck
 	mov	FS:[ScratchSource],edx
 	add	edx,8192				; allocate 2 scratch page tables for source
 	mov	FS:[ScratchDest],edx
@@ -1918,8 +2029,8 @@ $
 ; initial setup for XMS handle array work
 	cmp	fs:_IsXMSTableNotFixedEMS,0	; no XMS handle table info available
 	je	@@noarray
-	movzx	eax,WORD PTR fs:[_PtrXMSHandleTable]
-	movzx	ecx,WORD PTR fs:[_PtrXMSHandleTable+2]
+	movzx	eax,WORD PTR fs:[_PtrXMShandleTable]
+	movzx	ecx,WORD PTR fs:[_PtrXMShandleTable+2]
 	shl	ecx,4			; convert seg to absolute
 	add	ecx,eax			; ecx -> XMS table
 
@@ -1958,8 +2069,8 @@ $
 
 	cmp	fs:[_NoVCPI],0	; see if VCPI allowed
 	je	@@namesetup			; yes
-	mov	edx,POOLBLOCK_ALLOCATION_SPACE * 2	; allow one block (1.5M) for NOVCPI UMBs
-	jmp	@@ownersetup
+	mov	ecx,POOLBLOCK_ALLOCATION_SPACE * 2	; allow one block (1.5M) for NOVCPI UMBs
+	jmp	@@novcpi
 
 ; allocate room for handle names (8*256 = 2K) and zero them
 @@namesetup:
@@ -1980,7 +2091,6 @@ $
 ;  page descriptor high word == 64-byte EMS/VCPI allocation block count from start, RELATIVE 1!
 ;  page descriptor low word ==  half-byte offset of allocation page (2 * 48)
 ;   within allocation block, not including system bytes
-	mov	fs:EMSPageAllocationPtrs,edi
 	mov	ecx,fs:_POTENTIAL_EMSVCPI_MEMORY
 	shr	ecx,14		; convert each 16K to pointer count
 	add	ecx,4		; allow for available computed versus actual rounding errors
@@ -1996,9 +2106,12 @@ $
 	cmp	ecx,fs:_MAXMEM16K	; throttle EMS if MAX= setting is less than 32M (MAX_EMS_PAGES_ALLOWED)
 	jb	@@zero2
 	mov	ecx,fs:_MAXMEM16K
+
+@@novcpi:
 	mov	dx,cx
 
 @@zero2:
+	mov	fs:EMSPageAllocationPtrs,edi
 	mov	eax,-1
 	rep	stos DWORD PTR [edi]
 	BIG_NOP;
@@ -2222,22 +2335,24 @@ V86_MONITOR PROC NEAR
 ; With the hardware interrupts 08h to 0Fh as well as 70h to 77h the interrupt flag is
 ; to be blocked
 
-; reflecting an IRQ to whichever handler the V86 task "IDT" offers)...
+; always clear interrupt flag, irrespective of whether hardware IRQ
+;; reflecting an IRQ to whichever handler the V86 task "IDT" offers)...
 ;
-	CMP     CX,08H*4                   ; range 08h to 0Fh ?
-	JB      SHORT @@V86_CONT	   ; Otherwise, then further
-	CMP     CX,0FH*4
-	JBE     SHORT @@CLR_IF
-	CMP     CX,70H*4                   ; Only within the range 70h to 77h
-	JB      SHORT @@V86_CONT
-	CMP     CX,77H*4
-	JA      SHORT @@V86_CONT
+;	CMP     CX,08H*4                   ; range 08h to 0Fh ?
+;	JB      SHORT @@V86_CONT	   ; Otherwise, then further
+;	CMP     CX,0FH*4
+;	JBE     SHORT @@CLR_IF
+;	CMP     CX,70H*4                   ; Only within the range 70h to 77h
+;	JB      SHORT @@V86_CONT
+;	CMP     CX,77H*4
+;	JA      SHORT @@V86_CONT
+
 @@CLR_IF:
 	AND     WORD PTR [ESP+14+8],NOT 200H; Clear IF: stop Interrupts
-				; clear IF if trigger was an hardware IRQ
-				; * decided by int number, so reprogramming 8259
-				; * would break this! Maybe an error code given to the
-				; * handler could tell in more reliable way?
+;				; clear IF if trigger was an hardware IRQ
+;				; * decided by int number, so reprogramming 8259
+;				; * would break this! Maybe an error code given to the
+;				; * handler could tell in more reliable way?
 @@V86_CONT:
 	AND     WORD PTR [ESP+14+8],NOT 100H; Clear TF: single step!
 		    				; clear TF in any case
@@ -2341,7 +2456,7 @@ notsb:
 
 					; no handling for 32bit IN/OUT or other potential GPF causes
 
-@@nix:
+@@NIX:
   JMP     @@V86_ABORT_IT          ; else complain!
 
 @@ExtendedOp:
@@ -2885,7 +3000,7 @@ CHK_CHANNEL ENDP
 ;
 
 
-pause proc near
+pauser proc near
 
 	push ds
 	push ax
@@ -2919,7 +3034,7 @@ pause proc near
 	pop ds
 	ret
 
-pause endp
+pauser endp
 
 V86_MONITOR     ENDP
 
@@ -2936,13 +3051,13 @@ KBOARD PROC NEAR
 
 ;		; * should directly jump to @@CONT here unless ALTBOOT is enabled!
 
-	mov	ax,V86_DATA_SEL
-	mov	ds,ax
-	cmp	_NoAltBoot,0
-	jne	@@CONT
+;	mov	ax,V86_DATA_SEL
+;	mov	ds,ax
+;	cmp	_NoAltBoot,0
+;	jne	@@CONT
 
-	MOV     AX,UNIVERSE_SEL		  ; flat 4 GB data segment
-	MOV     DS,AX
+;	MOV     AX,UNIVERSE_SEL		  ; flat 4 GB data segment
+;	MOV     DS,AX
 
 	movzx   esp,sp
 	movzx	eax,WORD PTR [esp+6+4]	; get return CS
@@ -2950,6 +3065,14 @@ KBOARD PROC NEAR
 	add	eax,[esp+6]		; add in return EIP
 	cmp	eax,0ffff2h		; could only have come from FFFF:2 address
 	je	kb_portreset
+
+	mov	ax,V86_DATA_SEL
+	mov	ds,ax
+	cmp	_NoAltBoot,0
+	jne	@@CONT
+
+	MOV     AX,UNIVERSE_SEL		  ; flat 4 GB data segment
+	MOV     DS,AX
 
 kb_keycheck:
         IN      AL,[PORT_A]	          ; get key-scancode
@@ -3039,7 +3162,7 @@ V86_START ENDP
 ; now only these table addresses are validm the tables from 0:0 not anymore
 
 INTENTRY_O MACRO SEQNR               ;; Unfortunaly the symbol name INTxx is only
-INT&SEQNR:                           ;; correctly produced in this way.
+INT_&SEQNR:                           ;; correctly produced in this way.
 		ENDM
 
 INTENTRY MACRO VON,BIS               ;; Generate entrypoint  for Interrupts in the
@@ -3061,7 +3184,7 @@ INTENTRYNR MACRO INTRNR,ADDRESS      ;; Purposefully call a routine
 
 INT_TABLE:
 		INTENTRY 0,8                 ; Redirect All Interrupts, up to the
-		INTENTRYNR 09H,<CALL KBOARD> ; keyboard- Interrupt to the
+		INTENTRYNR 9,<CALL KBOARD> ; keyboard- Interrupt to the
 				             ; Monitor
 
 ;********************************************************************
@@ -3074,8 +3197,8 @@ $
 ; The line INTENTRY 10,255 directly above (*-7-*) needs to deleted!!!
 ;********************************************************************
 		INTENTRY 10,66H
-                INTENTRYNR 67H,<JMP  EMM_ENTRY>; EMM-Driver
-		INTENTRY 68H,255
+                INTENTRYNR 103,<JMP  EMM_ENTRY>; EMM-Driver
+		INTENTRY 104,255
 ;(*-7-*)
 
 		PURGE   INTENTRY,INTENTRY_O,INTENTRYNR
@@ -3157,6 +3280,8 @@ ENDIF
 		jmp	BYEEMS
 
 not_vcpi_api:
+		cmp	cl,3fh		; see if special handling function
+		je	emm_special
 		SUB     CL,40H		    ; If outside of the permitted range,
 		JB      SHORT emm_INV_CALL    ; then report
                 CMP     CL,1DH              ; failure/error
@@ -3229,28 +3354,50 @@ stack32:
 
 	cmp	ax,0de0ch		; see if switch from protected mode to V86 mode
 	je	VCPI_PMtoV86	; yes, give it special handling
+
+; in client address space
+; on client stack
 	pushfd
 	cli					; don't allow interruptions
 	push	ds			; have to save segments for p-mode entry
 	push	es
 	push	fs
 
-;	push	ecx			; save client cr3
-;	mov	ecx,cr3
-;	push	ecx
-;	mov	ecx,ss:[esp+4]	; original value back to ecx
-
-	push	esi			; setup same as dispatch routine since we're jumping in the middle
-	push	edi
 	push	ecx
-	cld
-	
+	push	esi
 	mov	cx,cs
 	add	cx,8			; UNIVERSE_SEL value
 	mov	ds,cx
 	mov	es,cx
 	add	cx,8			; V86_DATA_SEL
 	mov	fs,cx
+
+	mov	ecx,cr3
+;	push	ecx
+;	mov	ecx,ss:[esp+4]	; original value back to ecx
+	mov	fs:[CR3_Save],ecx
+	mov	fs:[CX_Save],ss	; temp store client ss
+
+	xor	ecx,ecx
+	mov	cx,SEG RES_STACK
+	shl	ecx,4
+	add	ecx,V86_TOS
+	mov	si,ds
+	mov	ss,si
+	xchg	esp,ecx		; ecx == client esp
+
+; on server internal stack, in both address spaces
+	mov	esi,fs:[PAGEDIR]
+	mov	cr3,esi			; switch to server linear address space
+
+; in server address space
+	push	fs:[CX_Save]	; client ss to host stack
+	push	ecx			; client esp to host stack
+
+	push	esi			; setup same as dispatch routine since we're jumping in the middle
+	push	edi
+	push	ecx
+	cld
 
 ;	mov	ecx,fs:[PAGEDIR]
 ;	mov	cr3,ecx			; switch to server linear address space
@@ -3278,6 +3425,16 @@ PM_ret:
 ;	mov	cr3,ecx
 ;	pop	ecx
 
+	mov	ecx,fs:[CR3_Save]
+	mov	cr3,ecx			; restore client cr3
+
+; in client address space
+	lss	esp,[esp]		; restore client stack
+
+; on client stack
+	pop	esi
+	pop	ecx
+
 	pop	fs
 	pop	es
 	pop	ds
@@ -3285,6 +3442,44 @@ PM_ret:
 	DB	66h				; make 32-bit retf
 	retf
 PM_ENTRY	ENDP
+
+; special EMM handler flagged by function 3fh, if signatures match
+emm_special:
+	cmp	fs:[CX_Save],4652h
+	jne	emm_INV_CALL	; must match signature
+	cmp	dx,4545h
+	jne	emm_INV_CALL
+	cmp	al,1	; al must be 0 (a20 disable emulate) or 1 (enable)
+	ja	emm_INV_CALL
+	je	spec_enable
+
+; emulate a20 disable
+	cmp	fs:[_NoDisableA20],0	; see if we're allowed to disable it
+	jne	spec_done		; nope
+	mov	esi,OFFSET ZeroPTE
+	jmp	spec_share
+
+spec_enable:
+	mov	esi,OFFSET HMAPTE
+
+spec_share:
+	xor	ecx,ecx
+	mov	edi,fs:[PAGEDIR]
+spec_loop:
+	mov	eax,fs:[esi+ecx*4]
+	mov	ds:[edi+4*ecx+(256*4)+4096],eax	; HMA PTEs
+	inc	cx
+	cmp	cl,16
+	jb	spec_loop
+
+; flush TLB to update page maps
+	mov	esi,fs:[PAGEDIR]
+	mov	CR3,esi
+
+spec_done:
+	mov	ah,0
+	jmp	BYEEMS
+
 
 ;************************************************************
 ; simulate INT15/87
@@ -3377,11 +3572,20 @@ SIMULATE_INT1587 proc near
 
 	mov edi,edx
 
+	cmp	fs:[_NOCHECK],0
+	jne	@@accessok
 	cmp	fs:[_MEMCHECK],0
-	je	@@accessok
+	jne	@@memcheck
+
+; neither MEMCHECK nor NOCHECK, only allow outside RAM 3G-4G address accesses, default
+	cmp	esi,0c0000000h
+	jae	@@memcheck
+	cmp	edi,0c0000000h
+	jb	@@accessok
 
 ; adjust for end past current memory by creating page directory entry
 ;  and page table entries on the fly with linear == physical mapping
+@@memcheck:
 	push	eax
 	push	ebx
 	push	edx
@@ -3521,6 +3725,8 @@ SIMULATE_INT1587 proc near
 	pop	cx
 
 @@checkdone:
+	mov	eax,cr3
+	mov	cr3,eax			; ensure TLB is updated if holding old scratch mapping
 	pop	ebp
 	pop	edx
 	pop	ebx
@@ -4434,7 +4640,11 @@ ems4_setname:
 	shr	edi,16	; original si into [e]di
 	add	esi,edi	; esi -> handle name (source)
 	mov	edi,fs:[EMSNAMETABLE]
-	jmp	ems4_doname
+	movzx	ecx,dx	; handle (index)
+	mov	eax,[esi]	; transfer handle name to es:di
+	mov	[ecx*8+edi],eax
+	mov	eax,[esi+4]
+	mov	[ecx*8+edi+4],eax
 
 	xor	ah,ah	; no error return
 	ret
@@ -4470,7 +4680,12 @@ getallhand:
 	jz	@@free_handle
 	inc	ax		; count that open handle
 	push	eax
-	mov	ax,[edi]	; handle number
+
+;	mov	ax,[edi]	; handle number
+	mov	eax,edi
+	sub	eax,FS:[STATUSTABLE]
+	shr	eax,3
+
 	mov	[esi],ax
 	movzx	eax,ax
 	shl	eax,3		; convert to table offset
@@ -4496,11 +4711,12 @@ getallhand:
 	mov	ecx,[edi+4]		; (8 byte binary string)
 	or	eax,eax
 	jnz	@@valid_search_term
-	or	ecx,ecx
-	jz	@@invalid_search_term
+;	or	ecx,ecx
+;	jz	@@invalid_search_term
 @@valid_search_term:
 	xor	edx,edx			; handle number
-	mov	ecx,fs:[EMSNAMETABLE]
+;	mov	ecx,fs:[EMSNAMETABLE]
+	mov	edi,fs:[EMSNAMETABLE]
 	mov	esi,fs:[STATUSTABLE]
 @@scan_for_name:
 	cmp	WORD PTR [esi],-2	; closed, auto-fail
@@ -4878,7 +5094,7 @@ VCPI_GetInterface	PROC	NEAR
 	mov	esi,[esi]		; edx -> page table for first 1M
 	and	esi,0fffff000h	; mask to page frame address
 ;	mov	ecx,1000h/4
-	mov	ecx,800h/4		; only map first 2M so debugger can stuff in
+	mov	ecx,700h/4		; only map first 1.75M so debugger can stuff in
 						; its own PTE's (only ~1.3M needed anyway)
 	push	eax
 
@@ -4895,7 +5111,7 @@ vgiloop:
 	BIG_NOP
 
 ;	add	DWORD PTR [esp+6],1000h	; advance edi value stored on stack
-	add	DWORD PTR [esp+6],800h	; advance edi value stored on stack
+	add	DWORD PTR [esp+6],700h	; advance edi value stored on stack
 
 	mov	ebx,OFFSET PM_ENTRY
 	xor	ah,ah
@@ -5159,7 +5375,7 @@ VCPI_V86toPM	PROC	NEAR
 	pop	edi
 	add	esp,4			; clear esi value off of stack
 
-	mov	eax,cr3
+;	mov	eax,cr3
 
 ; actually, reloading cr3 with same value doesn't make any difference
 ;	cmp	eax,[esi].SW_CR3
@@ -5250,8 +5466,10 @@ VCPI_PMtoV86	ENDP
 IF	VCPI_DEBUG	EQ	1
 
 VCPI_Debugging	PROC	NEAR
-	mov	ebx,fs:_POTENTIAL_EMSVCPI_MEMORY
-	mov	edx,fs:[EMSPageAllocationEnd]
+	call	GetFreeXMS4KPageCount
+	mov	ebp,edx		; ebp == XMS free 4K pages
+	call	GetCurrent4KPageCount	; current free in eax, current total in edx
+	mov	ebx,eax
 	ret
 VCPI_Debugging	ENDP
 
@@ -5280,24 +5498,40 @@ TEST_HANDLE ENDP
 ; EMS/VCPI memory management routines
 
 ; dynamically compute EMS pages, store to _PAGESAVAIL
-;  if fixed allocation, do nothing, keep original variable values
+;  if fixed allocation, check only current EMS store
 ; destroy no registers
 DynamicEMSPageCount	PROC
-	cmp	fs:_IsXMSTableNotFixedEMS,0	; check if pool sharing
-	je	@@ret					; no
-
-; dynamically compute number of EMS pages
 	push	eax
 	push	ecx
 	push	edx
+	push	edi
+
+	xor	ecx,ecx			; init count of free 16K XMS pool blocks
+	cmp	fs:_IsXMSTableNotFixedEMS,0	; check if pool sharing
+	je	@@pastxms
 
 	call	GetFreeXMS4KPageCount
 	shr	edx,2			; convert 4K count to 16K pages
 	mov	ecx,edx
-	call	GetCurrentEMSPageCount	; current in dx, available in eax
+
+; current EMS page count in dx, available in eax, VCPI/EMS used in edi
+@@pastxms:
+	call	GetCurrentEMSPageCount
+	cmp	fs:_IsXMSTableNotFixedEMS,0	; check if pool sharing
+	je	@@ret
 	add	eax,ecx			; eax == potential pages available
 
+; total free must be <= MAXMEM16K - current VCPI/EMS allocated/used
+;  otherwise set total free = MAXMEM16K - allocated
+	mov	ecx,fs:_MAXMEM16K
+	sub	ecx,edi			; amount that can still be allocated (total - used)
+	jc	@@nofree
+	cmp	eax,ecx
+	jbe	@@pagemax		; available less than amount allowed for allocation
+	mov	eax,ecx
+
 ; limit possible EMS pages to maximum allowed
+@@pagemax:
 	cmp	eax,10000h
 	jae	@@adj1
 	cmp	ax,fs:[_MAXPAGES]
@@ -5309,15 +5543,19 @@ DynamicEMSPageCount	PROC
 	ja	@@noadj2
 	mov	ax,dx
 @@noadj2:
-	sub	ax,dx				; max - used == max available
+	sub	ax,dx			; max - used == max available
 
+@@ret:
 	mov	fs:[_PAGESAVAIL],ax
+	pop	edi
 	pop	edx
 	pop	ecx
 	pop	eax
-
-@@ret:
 	ret
+
+@@nofree:
+	xor	ax,ax
+	jmp	@@ret
 
 DynamicEMSPageCount	ENDP
 
@@ -5492,13 +5730,14 @@ GetCurrent4KPageCount	ENDP
 
 
 ; get used 16K (EMS) page count in pool
-; return used count in dx, available in eax
+; return used EMS page count in dx, available in eax, VCPI/EMS used in edi
 ; destroy no other registers
 GetCurrentEMSPageCount	PROC
 	push	esi
 	push	ecx
 
 	xor	eax,eax
+	mov	edi,eax
 	mov	dx,ax
 	mov	esi,fs:[EMSPageAllocationPtrs]
 	mov	cx,fs:[_MAXPAGES]
@@ -5518,7 +5757,10 @@ GetCurrentEMSPageCount	PROC
 @@findblkloop:
 	cmp	[esi].psi_addressK,0
 	je	@@nextfind
-	movzx	ecx,[esi].psi_16kfree
+	movzx	ecx,[esi].psi_16kmax
+	sub	cl,[esi].psi_16kfree
+	add	edi,ecx			; update total pages used
+	mov	cl,[esi].psi_16kfree	; high words known zero
 	add	eax,ecx
 
 @@nextfind:
@@ -5633,15 +5875,13 @@ ExpandCurrentPoolBlock	PROC
 
 @@loc2:
 	mov	fs:LastBlockFreed,edx	; expanding block size is same as freeing space
-	clc					; flag success
-
-@@locret:
 	pop	edi
 	pop	esi
 	pop	ecx
 	pop	ebx
 	pop	eax
 	popf
+	clc					; flag success
 	ret
 
 @@next:
@@ -5651,8 +5891,14 @@ ExpandCurrentPoolBlock	PROC
 	jne	@@hanloop
 
 @@locfail:
-	stc
-	jmp	@@locret
+	pop	edi
+	pop	esi
+	pop	ecx
+	pop	ebx
+	pop	eax
+	popf
+	stc				; flag failure
+	ret
 
 ExpandCurrentPoolBlock	ENDP
 
@@ -5891,7 +6137,7 @@ Allocate16KPageFromPoolBlock	PROC
 	call	CheckBlockIntegrity	; force valid value
 
 @@valid1:
-	sub	[esi].psi_4Kfree,4
+	sub	[esi].psi_4kfree,4
 	jnc	@@valid2
 	call	CheckBlockIntegrity	; force valid value
 
@@ -6197,8 +6443,9 @@ AllocateXMSForPool	PROC
 	mov	cl,al				; shift the block size higher by factor of two
 	shl	fs:[XMSBlockSize],cl
 
-	cmp	fs:[_MAXMEM16K],MAXMEM16K_DEFAULT
-	je	@@trailadj			; no MAX setting
+; default is same as a MAX setting
+;	cmp	fs:[_MAXMEM16K],MAXMEM16K_DEFAULT
+;	je	@@trailadj			; no MAX setting
 
 ; MAX setting, don't overallocate XMS we can't use
 	push	edx
@@ -6297,9 +6544,6 @@ AllocateXMSForPool	PROC
 
 @@allocsuccess:
 	inc	fs:[XMSPoolBlockCount]
-	clc
-
-@@allocret:
 	pop	edi
 	pop	esi
 	pop	edx
@@ -6307,11 +6551,19 @@ AllocateXMSForPool	PROC
 	pop	ebx
 	pop	eax
 	popf
+	clc
 	ret
 
 @@allocfail:
+	pop	edi
+	pop	esi
+	pop	edx
+	pop	ecx
+	pop	ebx
+	pop	eax
+	popf
 	stc
-	jmp	@@allocret
+	ret
 
 AllocateXMSForPool	ENDP
 
@@ -6580,6 +6832,10 @@ TryFreeToXMS	PROC
 	mov	[esi].xas_flag,1			; flag free
 	dec	fs:[XMSPoolBlockCount]
 
+@@defragger:
+	call	DefragXMS
+	jc	@@defragger
+
 @@checkdone:
 	pop	edi
 	pop	edx
@@ -6592,11 +6848,91 @@ TryFreeToXMS	PROC
 
 TryFreeToXMS	ENDP
 
+; try to defrag XMS blocks
+; return when two blocks merged
+; carry set if merge occurred, reset otherwise
+; destroys eax,ecx,edx,esi,edi
+DefragXMS	PROC
+	push	ebx
+	mov	esi,fs:XMSHandleArray
+	or	esi,esi
+	je	@@nodefrag
+	mov	cx,fs:XMS_Handle_Table.xht_numhandle
+	or	cx,cx
+	je	@@nodefrag
+	mov	ebx,[esi].xas_addressK
+	add	ebx,[esi].xas_sizeK	; ebx -> end address of first block (highest+1)
 
-; upon entry esi -> pool allocation block to perform integrity check upon
-;  update with valid information if allocation counts mismatch
-; destroy no registers
+@@defragloop:
+	cmp	[esi].xas_flag,2	; see if used
+	je	@@defragnext		; yes, don't check
+	cmp	[esi].xas_addressK,0
+	je	@@defragnext		; can't check blank handle
+	mov	edi,fs:XMSHandleArray
+	mov	dx,fs:XMS_Handle_Table.xht_numhandle
+
+@@checkloop:
+	cmp	esi,edi				; don't merge into self
+	je	@@checknext
+
+	cmp	[edi].xas_flag,2	; see if used
+	je	@@checknext		; yes, don't check
+	cmp	[edi].xas_addressK,0
+	je	@@checknext		; can't check blank handle
+
+; check if end of first block matches beginning of test block
+	cmp	ebx,[edi].xas_addressK
+	je	@@merge
+
+; check if start of first block matches end of test block
+	mov	eax,[edi].xas_addressK
+	add	eax,[edi].xas_sizeK	; eax -> end address of block (highest+1)
+	cmp	eax,[esi].xas_addressK
+	jne	@@checknext
+	xchg	esi,edi		; switch block pointer references for merging
+	jmp	@@merge
+
+@@checknext:
+	movzx	eax,fs:XMS_Handle_Table.xht_sizeof
+	add	edi,eax			; move to next handle descriptor
+	dec	dx
+	jne	@@checkloop
+
+@@defragnext:
+	movzx	eax,fs:XMS_Handle_Table.xht_sizeof
+	add	esi,eax			; move to next handle descriptor
+	dec	cx
+	jne	@@defragloop
+
+@@nodefrag:
+	clc
+
+@@defragret:
+	pop	ebx
+	ret
+
+; merge blocks, esi->merger block, edi->merged block
+@@merge:
+	mov	eax,[edi].xas_sizeK
+	add	[esi].xas_sizeK,eax	; update merger block size
+	mov	[esi].xas_lockcount,0	; ensure not showing as locked, shouldn't be
+
+	mov	[edi].xas_flag,1	; flag merged block free
+	mov	[edi].xas_lockcount,0
+	mov	[edi].xas_addressK,0
+	mov	[edi].xas_sizeK,0
+
+	stc
+	jmp	@@defragret
+
+DefragXMS	ENDP
+
+; hook left for debugging, no current actions taken
+;; upon entry esi -> pool allocation block to perform integrity check upon
+;;  update with valid information if allocation counts mismatch
+;; destroy no registers
 CheckBlockIntegrity	PROC
+COMMENT $
 	push	ax
 	push	bx
 	push	cx
@@ -6686,6 +7022,8 @@ CheckBlockIntegrity	PROC
 	pop	cx
 	pop	bx
 	pop	ax
+END COMMENT $
+
 	ret
 
 CheckBlockIntegrity	ENDP
@@ -6747,13 +7085,15 @@ GO:
 
 go_driver_entry proc far
 
-	push ax
-	push bx
-	push cx
-	push dx
-	push si
-	push bp
+	push eax
+	push ebx
+	push ecx
+	push edx
+	push esi
+	push ebp
 	push ds
+	push fs
+	push gs
 
 	mov word ptr es:[di+3	 ],1000h	; STATUS_BAD
 
@@ -6783,19 +7123,23 @@ driver_done:
 						; driver entry, so we NEVER get called again
 	mov bp,sp				;
 						; stack frame:
-	lds bx, [bp + 14]			; 7*regs, [cs:ip]
+;	lds bx, [bp + 14]			; 7*regs, [cs:ip]
+	lds bx, [bp + 30]			; 6*regs+3*sregs, [cs:ip]
+
 	sub bx,5				; call far
 
 	mov byte ptr [bx],0ebh			; JMP $+3
 	mov byte ptr [bx+1],03h
 
+	pop gs
+	pop fs
 	pop ds
-	pop bp
-	pop si
-	pop dx
-	pop cx
-	pop bx
-	pop ax
+	pop ebp
+	pop esi
+	pop edx
+	pop ecx
+	pop ebx
+	pop eax
 	retf
 go_driver_entry ENDP
 
@@ -6848,7 +7192,7 @@ go_driver PROC FAR
         XOR     AX,AX           ; next, restore (set back?)
         MOV     DS,AX           ; Reset-Flag
         MOV     AX,00AAh        ; usual OK-message
-	MOV     WORD PTR DS:[@Reset_flag],AX
+	MOV     WORD PTR DS:[@RESET_FLAG],AX
 	MOV     AX,SEG MONDATA      ; Set data segment
 	MOV     DS,AX
 
@@ -7064,6 +7408,7 @@ _IS386 PROC NEAR
 	mov ax,1					; OK
 	RET
 @@NO_386:
+	popf
 	xor ax,ax
 	ret
 _IS386 ENDP

@@ -1,9 +1,9 @@
 Begin3
 Title:          EMM386
-Version:        2.04
-Entered-date:   07 Jul 2005
-Description:    HIMEM + EMM386, MAX OPTION, STABLE, EMS, NUMHANDLES
-Keywords:       EMM386 UMB EMS HIMEM XMS VDS USB POOL SHARING STABLE
+Version:        2.26
+Entered-date:   25 Aug 2006
+Description:    HIMEM + EMM386, STABLE, COMPATIBILITY
+Keywords:       EMM386 UMB EMS HIMEM XMS VDS USB POOL SHARING STABLE QEMU VPC A20 REBOOT UPX --8086
 Author:         Tom Ehlert, Michael Devore (FreeDosStuff@devoresoftware.com)
 Maintained-by:  Michael Devore (FreeDosStuff@devoresoftware.com), Tom Ehlert
 Primary-site:   ftp://ftp.devoresoftware.com/downloads/emm386

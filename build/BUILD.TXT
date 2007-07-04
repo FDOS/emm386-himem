@@ -1,0 +1,58 @@
+IMPORTANT NOTE: The build subsystem is not yet officially supported.
+Please direct any questions on the topic to Arkady V.Belousov
+(ark@mos.ru, arkady.belousov@gmail.com) for further detail. His
+documentation on the build follows:
+
+To build HIMEM and EMM386 executables, there present build subsystem
+(which based on subsystem from FreeDOS kernel and customized similarly).
+
+Build subsystem contains BUILD.BAT for compile (through MAKEFILE),
+CLEAN.BAT to remove temporary files (listings, object files, etc),
+CLOBBER.BAT, which removes also compiled executables, and support
+files (*.CFG, *.MAK, other *.BAT files).
+
+Also, there is a CONFIG.B file that specifies all the paths and name of
+the (default) compiler, assembler and its options, etc. You must copy
+it to CONFIG.BAT first, then edit to reflect real environment.
+
+The reason for copying of CONFIG.B to CONFIG.BAT is that when new release
+of the EMM386 package come out, you can extract it over previous sources,
+and not have to worry about resetting up your configuration because your
+CONFIG.BAT file will not get replaced!
+
+Build subsystem supports assembling by NASM and TASM and compilation by
+Turbo C 2.01, Turbo C++ 1.01, Borland C, MS VC and OpenWatcom - see
+CONFIG.B for details. (Though, HIMEM/EMM386 sources are currently ready
+only for TASM and Borland compilers. But NoMySo utility from
+ftp://ftp.devoresoftware.com/downloads/nomyso/ allows to assemble some
+TASM sources, including HIMEM/EMM386, by NASM.)
+
+Optionally, HIMEM/EMM386 executables can be compressed using UPX. Simply
+adjust CONFIG.BAT to enable it.
+
+Syntax of BUILD.BAT: "BUILD [-r] [msc|wc|tc|tcpp] [86|186|386] [debug]"
+(where "-r" clobbers all before compiling). These options allow on the
+fly override paramaters from CONFIG.BAT without modifying it, and build
+subsystem is enough smart to rebuild all if, for example, you select
+different compiler, than previously.
+
+Example of working CONFIG.BAT:
+
+@echo off
+set XASM=tasm /m/mx
+set AFLAGS=/z/la/n
+set COMPILER=BC
+set TC_BASE=c:\devel\tc
+set TCPP_BASE=c:\devel\tcpp
+set BC_BASE=c:\devel\bc
+set WATCOM=c:\devel\watcom15
+if "%dos4g%" == "" set dos4g=quiet
+
+Example of compilation:
+
+command/c build >log    // compile and log all output to LOG file
+build tc                // re-compile for COMPILER=TC
+
+Resulting executables will be placed in SOURCE directory. Intermediate
+(non-packed) execuatbles are reside in directory with batch files - they
+may be useful for debugging.

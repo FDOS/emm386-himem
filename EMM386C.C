@@ -50,6 +50,7 @@ extern uchar far FlagNOEMS;
 extern uchar far NoPageFrame;
 extern uchar far SB;
 extern uchar far NoAltBoot;
+extern uchar far NoDisableA20;
 extern uchar far IsXMSTableNotFixedEMS;
 extern ulong far PtrXMShandleTable;
 extern ushort far XMS_CONTROL_HANDLE;  
@@ -63,6 +64,7 @@ extern char   far IllegalOpcodeHandler[];
 extern char   far startup_verbose;
 extern char   far INIT_DONE;
 extern char   far MEMCHECK;
+extern char   far NOCHECK;
 extern char   far ENDALLOC;
 extern char   far EMM_Driver_Name[];
 extern struct xmschain far UMBhandler; 
@@ -108,7 +110,7 @@ unsigned long FlagEMSwanted = 0L;	/* with pool-sharing, no longer a default EMS 
 
 
 
-char VDS_enabled = 0;					/* only if explicitly enabled */
+char VDS_enabled = 1;					/* only if explicitly enabled */
 char MemoryRequest = 0;					/* only set if EMM= memory request */
 
 
@@ -285,25 +287,25 @@ void ScanSystemMemory(void)
 		}
 	}
 
-	/* for (i = 0xa0; i < 0xf0; i++)
+	/* for (i = 0xa0; i < 0xf8; i++)
 			printf("%x00 : %c\n",i,SystemMemory[i]); */
 }
 
 /* 
-	find a contiguos area of 64 KB 
+	find a contiguous area of 64 KB 
 	if none is found, EMS should be disabled
 	should handle commandline option like "PAGEFRAME=0xd000"
 */	
 ushort LocatePageFrame(void)
 {   
 	int base,i;
-	ushort frame = 0xe0;
+	ushort frame = 0;
 	uchar Searching = 0;
 
-	if (FlagNOEMS)
+	if (FlagNOEMS || NoPageFrame)
 		{
 		/* FRAME = 0; */ 
-		return 0xe000;
+		return 0;
 		}
 
 	if (FlagFRAMEwanted)
@@ -324,7 +326,6 @@ ushort LocatePageFrame(void)
 		Searching = 1;
 		}
 
-
 	for (base = 0xa0; base <= 0xf0; base++)
 		{		
 		for (i = 0; i < 16; i++)
@@ -341,14 +342,16 @@ ushort LocatePageFrame(void)
 	if (frame == 0)
 		{
 /*		printf("no suitable page frame found, which we can't handle\n");	*/
-		printf("no suitable page frame found\n");
+		printf("no suitable page frame found.  EMS functions limited.\n");
 		NoPageFrame = TRUE;
+		return 0;
 		}
 
 
 frameset:
 	if (startup_verbose || Searching)
 		printf("using PAGEFRAME %02x00:0000\n", frame);
+
 	fmemset(SystemMemory+frame,'P',16);
 		
 	return frame << 8;
@@ -382,7 +385,7 @@ UMBpageswanted(void)
 {
 	int i,wanted = 0;
 /*	for (wanted = 0, i = 0xa0; i < 0xf0; i+=4)	*/
-	for (wanted = 0, i = 0xa0; i < 0xf0; i++)
+	for (wanted = 0, i = 0xa0; i < 0xf8; i++)
 		if (isUMBMemory(i))
 			{
 			wanted++;
@@ -610,20 +613,6 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 		POTENTIAL_EMSVCPI_MEMORY = xmstotal * 1024UL;
 	}
 
-/* KILL AUTO-RESERVE FOLLOWING POOL-SHARING FEATURE ADDITION
-	kbwanted adds in 1/8th the amount of free XMS if NOEMS and is VCPI,
-	and user didn't request exact amount, up to a maximum of 12M
-	if (FlagNOEMS && !NoVCPI && !MemoryRequest)
-	{
-		reserve = (xmslargest >> 3);
-		if (reserve > MAX_VCPI_RESERVE)
-		{
-			reserve = MAX_VCPI_RESERVE;
-		}
-		kbwanted += reserve;
-	}
-*/
-
 /* if VCPI, need ((XMS total / 1.5M) + 128) * 64 bytes for pool allocation
 	table entries, 1.5M is pool allocation maximum memory control,
 	128 is max number XMS handles, 64 is pool block size,
@@ -662,7 +651,8 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 		kbneeded++;	/* small NOVCPI additions */
 	}
 
-	if (MEMCHECK)
+/*	if (MEMCHECK)	*/
+	if (!NOCHECK)
 	{
 		kbneeded += 16;	/* add room for four scratch page tables */
 	}
@@ -672,6 +662,7 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 						/* allocate memory from XMS */
 
 	xmshandle = 0;
+#if 0
 	/* first try to allocate from end portion of largest block */
 	if (ENDALLOC && (kbneeded + kbwanted < xmslargest))
 	{
@@ -713,6 +704,13 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 			}
 		}
 	}
+#endif
+
+	/* leave a little extended memory, if possible, for programs that want some XMS */
+	if ((xmslargest > kbneeded + 384UL) && (xmslargest < kbneeded + kbwanted + 384UL))
+	{
+		kbwanted = xmslargest - kbneeded - 384UL;
+	}
 
 	for ( ; !xmshandle; kbwanted /= 2)
 		{
@@ -724,6 +722,18 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 	        	xmshandle = xmsdx;
 	        	break;
 	        	}
+	        /* try largest free block based allocation */
+	        if ((xmslargest > kbneeded + kbwanted / 2) &&
+	            (xmslargest < kbneeded + kbwanted))
+	        	{
+    	        xmsdx = xmslargest;
+        	    if (xmscall(9))
+            	    {
+                	    kbwanted = xmslargest - kbneeded;
+            	      	xmshandle = xmsdx;
+            	       	break;
+            	    }
+	        	}
 		}
 		else
 		{
@@ -733,7 +743,22 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 			{
 				xmshandle = reg32.edx_low;
 				break;
-			}
+    		}
+	        /* try largest free block based allocation */
+   	        if ((xmslargest <= kbneeded + kbwanted / 2) ||
+   	            (xmslargest >= kbneeded + kbwanted))
+   	        {
+       	        /* outside range, try next loop */
+       	        break;
+   	        }
+			reg32.edx_low = (unsigned int)((xmslargest) & 0xffff);
+			reg32.edx_high = (unsigned int)((xmslargest) >> 16);
+       	    if (xmscall32(0x89))
+           	{
+           	    kbwanted = xmslargest - kbneeded;
+   				xmshandle = reg32.edx_low;
+           	    break;
+            }
 		}
 		if (kbwanted == 0)
 			{
@@ -842,7 +867,8 @@ foundend:
 
 								/* now prepare UMB segments to be used later */
 	index = 0;
-	for (mem = 0xa0; mem < 0xf0; )
+/*	for (mem = 0xa0; mem < 0xf0; )	*/
+	for (mem = 0xa0; mem < 0xf8; )	/* allow umbs in f000-f7ff */
 		if (!isUMBMemory(mem))
 /*			mem += 4;	*/
 			mem++;	/* allow 4K UMB's	*/
@@ -856,16 +882,17 @@ foundend:
 			UMBsegments[index].segment = mem  << 8;
 			UMBsegments[index].size    = size << 8;			
 
-/* EMM386 no longer disallows 0xa000 upper memory block returns
+#if 0
+	/* EMM386 no longer disallows 0xa000 upper memory block returns */
                                            / * this could cause weird bugs 
                                               if upper memory a000 would ever
-                                              be merged with 9fff:0        * /
+                                              be merged with 9fff:0        */
 			if (UMBsegments[index].segment == 0xa000)
 				{			
 				UMBsegments[index].segment++;
 				UMBsegments[index].size   --;			
 				}
-*/
+#endif
 
 
 			if (startup_verbose) 
@@ -929,8 +956,8 @@ int TheRealMain(int mode, char far *commandline)
 	uchar SaveVar;
 	
 
-	printf( PROGRAM " 2.04 [" __DATE__ "]"
-	       " (c) tom ehlert 2001-2005 c't/H. Albrecht 1990\n");
+	printf( PROGRAM " 2.26 [" __DATE__ "]"
+	       " (c) tom ehlert 2001-2006 c't/H. Albrecht 1990\n");
 
 	fmemset(SystemMemory,'U',sizeof(SystemMemory));
 
@@ -943,7 +970,8 @@ int TheRealMain(int mode, char far *commandline)
 		startup_verbose = 1;
 		}
 
-	if (FindCommand(commandline, "EMM=", &found) )
+	if (FindCommand(commandline, "EMM=", &found) ||
+		FindCommand(commandline, "MIN=", &found))
 		{ 
 		FlagEMSwanted = GetValue(found,10,TRUE);
 		if (FlagEMSwanted > MAXK_EMS_ALLOWED)
@@ -979,13 +1007,19 @@ int TheRealMain(int mode, char far *commandline)
 		}
 		}
 
+	if (FindCommand(commandline, "NOVDS", &found) )
+		{
+		if (startup_verbose)	
+			printf("VDS disabled\n");
+		VDS_enabled = 0;
+		}
+
 	if (FindCommand(commandline, "VDS", &found) )
 		{
 		if (startup_verbose)	
 			printf("VDS enabled\n");
 		VDS_enabled = 1;
 		}
-
 
 	if (FindCommand(commandline, "FRAME=", &found) ||
 	    FindCommand(commandline, "/P",     &found) )
@@ -1024,25 +1058,47 @@ int TheRealMain(int mode, char far *commandline)
 		MEMCHECK = 1;
 		}
 
+	if (FindCommand(commandline, "NOCHECK", &found) )
+		{ 
+		NOCHECK = 1;
+		}
+
 	if (FindCommand(commandline, "MAX=", &found) )
 		{ 
 		MAXMEM16K = GetValue(found,10,TRUE);
 		MAXMEM16K /= 16UL;
 		}
 
+/*
 	if (FindCommand(commandline, "ENDALLOC", &found) )
 		{ 
 		ENDALLOC = 1;
 		}
+*/
 
 	if (FindCommand(commandline, "NOALTBOOT", &found) )
 		{ 
 		NoAltBoot = 1;
 		}
 
+	if (FindCommand(commandline, "NODISABLEA20", &found) )
+		{ 
+		NoDisableA20 = 1;
+		}
+
 	if (FindCommand(commandline, "ALTBOOT", &found) )
 		{ 
-		/* ignore ALTBOOT option (default condition */
+		NoAltBoot = 0;
+		}
+
+	if (FindCommand(commandline, "NOHI", &found) )
+		{ 
+		/* NOHI is a no-op, but helps MS EMM386 switch compatibility */
+		}
+
+	if (FindCommand(commandline, "NOMOVEXBDA", &found) )
+		{ 
+		/* NOMOVEXBDA is a no-op, but helps MS EMM386 switch compatibility */
 		}
 
 	if (FindCommand(commandline, "RAM", &found) ||
@@ -1120,22 +1176,26 @@ int TheRealMain(int mode, char far *commandline)
 									...
 							*/
 							
-		printf("\n"
+		printf("Requires 80386+ CPU.\n"
 				"please load " PROGRAM " as DEVICE=" PROGRAM ".EXE in config.sys\n\n");
 
 		printf("commandline options available for driver\n"
-				" ALTBOOT     - hook keyboard interrupt for reboot processing (default)\n"
+				" ALTBOOT     - hook keyboard interrupt for reboot processing\n"
 				" EMM=#####   - reserve up to #####K for only EMS/VCPI memory\n"
 				" FRAME=E000  - select wanted pageframe for EMS\n"
 				" I=A000-AFFF - IF YOU REALLY KNOW WHAT YOU DO (VGA graphics)\n"
 				" I=B000-B7FF - IF YOU REALLY KNOW WHAT YOU DO (Hercules)\n"
 				" I=TEST      - test ROM locations for UMB inclusion\n"
 				" MAX=#####   - maximum available VCPI memory in K; also EMS if <32M\n"
-				" NOALTBOOT   - do not hook keyboard interrupt for reboot processing\n"
+				" MEMCHECK    - access to full 4G address space without RAM (MMIO)\n"
+				" NOALTBOOT   - do not hook keyboard interrupt for reboot processing (default)\n"
+				" NOCHECK     - disallow access to address space without RAM (MMIO)\n"
+				" NODISABLEA20 - Do not allow EMM386 to disable A20\n"
 				" NOEMS       - disable EMS handling\n"
 				" NOVCPI      - disable VCPI handling, requires NOEMS\n"
+				" NOVDS       - disable Virtual DMA Services\n"
 				" SB          - SoundBlaster driver compatibility mode\n"
-				" VDS         - enable (subset of) Virtual DMA Services\n"
+				" VDS         - enable Virtual DMA Services (default)\n"
 				" /VERBOSE    - display additional details during start\n"
 				" X=D000-D800 - to make memory mapped devices work\n"
 				" X=TEST      - test ROM locations for UMB exclusion\n"
@@ -1198,8 +1258,9 @@ int TheRealMain(int mode, char far *commandline)
 			printf("  choosen FRAME address %x\n",FRAME);
 	
 	                   				/* some error checks, return != 0 --> exit */
+/* allow no frame by turning on NoPageFrame flag */
 		if (FRAME == 0)
-			return 1;
+			NoPageFrame = 1;
 		}
 
 							/* 
@@ -1371,7 +1432,7 @@ void MyFunnyMain()
 	printf("emm handles %x\n",emmbx);
 */
 /*
-	for (mem =0xa0; mem < 0xf0; mem+=4)
+	for (mem =0xa0; mem < 0xf8; mem+=4)
 		printf("mem %x %c - %d\n",mem,SystemMemory[mem], isUMBMemory(mem));
 */
 
@@ -1426,7 +1487,7 @@ void MyFunnyMain()
 	
 
 /*	for (i = 0xa0; i < 0xf0; i+=4)	*/
-	for (i = 0xa0; i < 0xf0; i++)	/* allow 4K UMB's */
+	for (i = 0xa0; i < 0xf8; i++)	/* allow 4K UMB's */
 		if (isUMBMemory(i))
 			{
 			if (startup_verbose)	

@@ -136,7 +136,7 @@ long GetValue(char far *commandline,int base, char usesuffix)
 		case 'M': result *= 1024;
 		case 'K': commandline[len]=' ';
 		          break;
-		case 'G': result *= 1024*1024;
+		case 'G': result *= 1024UL*1024UL;
 		         commandline[len]=' ';
 	}
 
